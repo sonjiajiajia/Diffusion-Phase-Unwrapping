@@ -215,26 +215,6 @@ itself does not measure independent ground-truth accuracy.
 
 `WRAP_DIR` optionally supplies wrapped-phase TIFFs for figures, not model inputs.
 
-## Mask-Guided Inference
-
-```bash
-MODEL_PATH=/path/to/ema_model.pt COND_DIR=/path/to/snaphu_cond \
-  GT_DIR=/path/to/ground_truth MASK_MAT=/path/to/results.mat \
-  MASK_KEY=Mask_Error EXP_DIR=outputs/masked \
-  bash run_mask_val.sh --tile_h 256 --tile_w 256 --overlap 64
-```
-
-The script loads one shared MATLAB mask. Finite, nonzero values mark valid
-pixels; zero or NaN values are invalid. It resizes the mask if needed and
-applies hole filling and binary closing before selecting tiles.
-
-Only tiles intersecting the processed mask are sampled. Outputs include
-full tile-coverage predictions, strictly masked predictions, PNGs, and a CSV
-of selected tile counts and alignment offsets. The mask is not an additional
-model input channel and does not contribute to the training loss.
-
-The current mask script requires matching ground truth for offset alignment
-and skips images without it. Use `run_val.sh` for inference without ground truth.
 
 ## Repository Structure
 
