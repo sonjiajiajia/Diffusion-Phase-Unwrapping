@@ -1,12 +1,12 @@
 # SNAPHU-Conditioned Diffusion for InSAR Phase Unwrapping
 
-A conditional diffusion pipeline that predicts unwrapped InSAR phase using
-SNAPHU unwrapping results as conditioning images. The repository includes
-training, DDIM inference, overlapping-tile stitching, and mask-guided inference.
+This repository contains the code accompanying the paper
+[**An InSAR Phase Unwrapping Framework for Large-scale and Complex Events**](https://arxiv.org/abs/2603.21378).
 
-The model condition is **SNAPHU unwrapped phase**, not wrapped phase.
-Wrapped phase may be provided for visualization only. The current pipeline
-does not apply Itoh, SB-PU, or other physical sampling projections.
+The paper was nominated for the **IGARSS 2026 Student Paper Contest**.
+
+A conditional diffusion pipeline that predicts unwrapped InSAR phase using
+SNAPHU unwrapping results as conditioning images.  
 
 ## Installation
 
@@ -25,8 +25,7 @@ python -m pip install -e '.[mpi]'
 ```
 
 The Bash launchers use single-process training. Activate your Python
-environment first, or set `PYTHON_BIN` to its interpreter. Dataset1.5 training
-has been tested with Python 3.10 on an RTX 5090.
+environment first, or set `PYTHON_BIN` to its interpreter.
 
 Datasets and pretrained weights are not included. Prepare SNAPHU conditions
 externally; this repository does not run SNAPHU itself.
@@ -53,45 +52,54 @@ split/
   Inference divides conditions by 50 without clipping. Use inputs compatible
   with the training range.
 
-The Dataset1.5 launcher uses `DDPM_1w` for training and `DDPM_1k` for validation:
+An example project data layout is:
 
 ```text
-Dataset1.5/
-  DDPM_1w/
+data/
+  train/
     unwrapped/
     cond/
-  DDPM_1k/
+  val/
     unwrapped/
     cond/
+  test/
+    cond/
+    unwrapped/   # Optional ground truth for evaluation
 ```
 
-Its default dataset root is `$HOME/Data/Dataset1.5`. Set `DATASET_ROOT` to
-use another location.
+Use `DATA_DIR` and `VAL_DATA_DIR` to select the training and validation
+splits. Use `COND_DIR` and optional `GT_DIR` for inference and evaluation.
 
 ## Training
 
 ```bash
-DATASET_ROOT=/path/to/Dataset1.5 bash run_dataset15_train.sh
+DATA_DIR=/path/to/train VAL_DATA_DIR=/path/to/val OUT_DIR=runs/snaphu_train \
+  bash run_train.sh --lr_anneal_steps 20000
 ```
 
-Default settings for the Dataset1.5 training launcher:
+Default settings for `run_train.sh`:
 
 | Setting | Value |
 | --- | --- |
-| Training / validation splits | DDPM_1w / DDPM_1k |
+| Training / validation directories | data/train / data/val |
 | Training patch size | 256 x 256 |
 | Input / output channels | 2 / 1 |
 | Base channels / residual blocks / attention heads | 128 / 2 / 4 |
 | Diffusion steps / noise schedule | 1000 / linear |
 | Prediction target | Normalized unwrapped phase (`predict_xstart=True`) |
-| Learning rate | 1e-4, linearly annealed |
-| Training updates | 150000 |
+| Learning rate | 1e-4 |
+| Training limit | Set with --lr_anneal_steps; unlimited when 0 |
 | Training batch / precision | 8 / FP32 |
 | Maximum gradient norm | 1.0 (before the optimizer update) |
 | EMA rate | 0.9999 |
 | Validation interval / DDIM steps | 5000 / 100 |
-| Validation batch / maximum batches per validation | 2 / 5 |
-| Checkpoint interval | 5000 |
+| Validation batch / maximum batches per validation | 8 / 10 |
+| Checkpoint interval | 10000 |
+| Logging interval | 1000 |
+
+The command above runs to a total limit of 20000 steps and linearly anneals
+the learning rate over that period. Change the limit for your experiment.
+Validation samples up to 80 images per pass with the default settings.
 
 The two input channels are noisy target phase and the SNAPHU condition.
 The default training objective is normalized unwrapped-phase prediction MSE:
@@ -111,15 +119,9 @@ of an independently supplied checkpoint.
 Override settings using environment variables or additional arguments:
 
 ```bash
-DATASET_ROOT=/path/to/Dataset1.5 TRAIN_STEPS=20000 BATCH_SIZE=4 \
-  USE_FP16=False OUT_DIR=runs/my_experiment bash run_dataset15_train.sh
-```
-
-For other datasets, use the generic launcher with an explicit validation interval:
-
-```bash
-DATA_DIR=/path/to/train VAL_DATA_DIR=/path/to/val OUT_DIR=runs/custom \
-  bash run_train.sh --lr_anneal_steps 20000 --val_every 2000
+DATA_DIR=/path/to/train VAL_DATA_DIR=/path/to/val OUT_DIR=runs/my_experiment \
+  LR=5e-5 USE_FP16=False bash run_train.sh \
+  --lr_anneal_steps 20000 --batch_size 4 --val_every 2000
 ```
 
 The launcher uses `--microbatch -1` by default. You can split batches with
@@ -129,18 +131,18 @@ batch size, including when the final microbatch is smaller.
 ### Resume Training
 
 ```bash
-DATASET_ROOT=/path/to/Dataset1.5 \
-  RESUME_CHECKPOINT=runs/dataset15_xstart/model010000.pt \
-  TRAIN_STEPS=20000 bash run_dataset15_train.sh
+DATA_DIR=/path/to/train VAL_DATA_DIR=/path/to/val OUT_DIR=runs/snaphu_train \
+  RESUME_CHECKPOINT=runs/snaphu_train/model010000.pt \
+  bash run_train.sh --lr_anneal_steps 20000
 ```
 
 Resume with a `model*.pt` checkpoint. Matching EMA and optimizer files are
-loaded when available. `TRAIN_STEPS` is the total limit including resumed
+loaded when available. `--lr_anneal_steps` is the total limit including resumed
 steps, not the number of additional updates.
 
 ### Logs and Outputs
 
-The default output directory is `runs/dataset15_xstart/`, configurable using
+The default output directory is `runs/snaphu_train/`, configurable using
 `OUT_DIR`. It contains training weights (`model*.pt`), EMA weights (`ema_*.pt`),
 optimizer states (`opt*.pt`), `progress.csv`, `log.txt`, and validation figures
 in `val_vis/`. `config.json` records the run settings, including prediction
@@ -153,6 +155,10 @@ in `progress.csv`:
 ```text
 step=100 | loss=0.178 | grad_norm=3.21 | lr=0.0001
 ```
+
+Training validation computes per-image `RMSE(pred - GT) / (GT.max - GT.min)`
+and reports its mean as a ratio, without phase-offset alignment. Validation
+figures show the original cond, prediction, and GT phases in radians.
 
 FP32 is the default. `MAX_GRAD_NORM` controls gradient clipping; the logged
 `grad_norm` is the norm before clipping. Set it to `0` to disable clipping.
@@ -168,14 +174,12 @@ Supply a compatible checkpoint via `MODEL_PATH`. The default path is
 The x0-prediction run must start from scratch: do not resume its training from
 a noise-prediction checkpoint. For inference with an existing noise-prediction
 checkpoint, set `PREDICT_XSTART=False`. Weight shapes alone do not encode the
-prediction objective. The new default output directory separates these runs.
+prediction objective.
 
-EMA with rate 0.9999 retains approximately 67% of its initialization after
-4000 successful updates. Early EMA validation can lag behind training weights;
-do not interpret a small training loss as evidence of converged sampling.
-At every successful optimizer update, EMA weights become `0.9999 * previous
-EMA + 0.0001 * current weights`. Validation uses EMA weights, and each
-checkpoint saves both `model*.pt` and `ema_*.pt` for the same step.
+EMA smooths model weights across optimizer updates. At every successful
+update, EMA weights become `0.9999 * previous EMA + 0.0001 * current weights`.
+Validation uses EMA weights, which can lag behind training weights early in
+training. Each checkpoint saves both `model*.pt` and `ema_*.pt`.
 
 For 256 x 256 inputs, override the default tile dimensions:
 
@@ -240,7 +244,6 @@ scripts/image_train.py      Training entry point
 scripts/cond_sample_eval.py Conditional inference and evaluation
 scripts/mask_tiling_eval.py Mask-guided tiled inference
 run_train.sh               Generic training launcher
-run_dataset15_train.sh     Dataset1.5 training launcher
 run_val.sh                 Conditional inference launcher
 run_mask_val.sh            Mask-guided inference launcher
 setup.py                   Package and dependency declaration
